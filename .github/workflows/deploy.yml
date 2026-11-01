@@ -1,0 +1,58 @@
+name: Build and Deploy Python Service
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: python-service
+      CONTAINER_NAME: python-service
+      HOST_PORT: 8000
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t "$IMAGE_NAME:${{ github.sha }}" -t "$IMAGE_NAME:latest" .
+
+      - name: Deploy Docker container
+        run: |
+          # Remove any leftover container from a previous run
+          docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+          docker run -d --name "$CONTAINER_NAME" -p "$HOST_PORT:8000" "$IMAGE_NAME:latest"
+
+      - name: Test service and confirm container is running
+        run: |
+          # The app needs a few seconds to start, so retry the health check
+          for i in $(seq 1 15); do
+            if curl -fsS "http://localhost:$HOST_PORT/health"; then
+              echo "Health check passed on attempt $i"
+              break
+            fi
+            echo "Attempt $i: service not ready yet"
+            sleep 2
+          done
+
+          # Final checks: health endpoint, home route, and container state
+          curl -fsS "http://localhost:$HOST_PORT/health"
+          curl -fsS "http://localhost:$HOST_PORT/"
+          RUNNING=$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME")
+          if [ "$RUNNING" != "true" ]; then
+            echo "Container $CONTAINER_NAME is not running"
+            exit 1
+          fi
+          echo "Container $CONTAINER_NAME is running"
+          docker ps --filter "name=$CONTAINER_NAME"
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker logs "$CONTAINER_NAME" || true
+
+      - name: Clean up container
+        if: always()
+        run: docker rm -f "$CONTAINER_NAME" || true
